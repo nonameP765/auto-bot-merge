@@ -1,0 +1,3 @@
+# NinjaCombined dependencies
+# freqtrade base image includes: numpy, pandas, talib, freqtrade
+pandas-ta==0.4.71b0

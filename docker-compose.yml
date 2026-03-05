@@ -1,0 +1,64 @@
+---
+x-common: &common
+  build:
+    context: .
+    dockerfile: docker/Dockerfile.custom
+  image: auto-bot-merge:latest
+  volumes:
+    - ./user_data:/freqtrade/user_data
+  environment:
+    TZ: Asia/Seoul
+
+services:
+  # ═══════════════════════════════════════════════════════════════
+  # LIVE TRADING (실매매)
+  # ═══════════════════════════════════════════════════════════════
+  live:
+    <<: *common
+    container_name: ninja-combined-live
+    restart: unless-stopped
+    command: >
+      trade
+      --config /freqtrade/user_data/config_live.json
+      --config /freqtrade/user_data/config_secrets.json
+      --strategy NinjaCombined
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ═══════════════════════════════════════════════════════════════
+  # DRY RUN (모의매매 — 실매매 전 테스트용)
+  # ═══════════════════════════════════════════════════════════════
+  dryrun:
+    <<: *common
+    container_name: ninja-combined-dryrun
+    profiles: [dryrun]
+    restart: unless-stopped
+    command: >
+      trade
+      --config /freqtrade/user_data/config_live.json
+      --config /freqtrade/user_data/config_secrets.json
+      --strategy NinjaCombined
+      --dry-run
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ═══════════════════════════════════════════════════════════════
+  # BACKTEST (백테스트 도구)
+  # ═══════════════════════════════════════════════════════════════
+  backtest:
+    <<: *common
+    container_name: ninja-combined-backtest
+    profiles: [tools]
+    command: >
+      backtesting
+      --config /freqtrade/user_data/config_compound.json
+      --strategy NinjaCombined
+      --timerange 20200710-20260303
+      --cache none
+      --enable-protections

@@ -1,0 +1,41 @@
+# ═══════════════════════════════════════════════════════════
+# Secrets (NEVER commit)
+# ═══════════════════════════════════════════════════════════
+user_data/config_secrets.json
+
+# ═══════════════════════════════════════════════════════════
+# Market data (large, re-downloadable)
+# ═══════════════════════════════════════════════════════════
+user_data/data/
+
+# ═══════════════════════════════════════════════════════════
+# Backtest / Hyperopt results (re-generatable)
+# ═══════════════════════════════════════════════════════════
+user_data/backtest_results/
+user_data/hyperopt_results/
+
+# ═══════════════════════════════════════════════════════════
+# Runtime artifacts
+# ═══════════════════════════════════════════════════════════
+user_data/logs/
+user_data/plot/
+user_data/notebooks/
+user_data/freqaimodels/
+user_data/hyperopts/
+
+# ═══════════════════════════════════════════════════════════
+# Freqtrade DB (live trading state — local only)
+# ═══════════════════════════════════════════════════════════
+user_data/tradesv3.sqlite
+user_data/tradesv3.dryrun.sqlite
+
+# ═══════════════════════════════════════════════════════════
+# OS / Editor / Tool
+# ═══════════════════════════════════════════════════════════
+.DS_Store
+*.pyc
+__pycache__/
+.ruff_cache/
+.sisyphus/
+.venv/
+*.egg-info/
