@@ -8,6 +8,10 @@
     "tradable_balance_ratio": 0.75,
     "dry_run": false,
     "cancel_open_orders_on_exit": true,
+    "enable_protections": true,
+    "bot_name": "NinjaCombined",
+    "initial_state": "running",
+    "force_entry_enable": false,
     "unfilledtimeout": {
         "entry": 10,
         "exit": 10,

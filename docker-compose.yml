@@ -19,6 +19,7 @@ services:
     restart: unless-stopped
     command: >
       trade
+      --logfile /freqtrade/user_data/logs/freqtrade.log
       --config /freqtrade/user_data/config_live.json
       --config /freqtrade/user_data/config_secrets.json
       --strategy NinjaCombined

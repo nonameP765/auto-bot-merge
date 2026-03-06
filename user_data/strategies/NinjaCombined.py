@@ -1,27 +1,45 @@
 """
-NinjaCombined — Long + Short Combined 5m Crypto Futures Strategy
-================================================================
-Merges two independent strategies into one bidirectional strategy:
+NinjaCombined v1.0 - bidirectional 5m futures strategy (long + short).
 
-  LONG side  → NinjaFutures5m V14.0 logic (auto-bot-v2)
-    4 dip-buying signals (e0v1e_1, e0v1e_new, clucHA, cofi) gated by 1h BULL/NEUTRAL/NEUTRAL-STRICT
-    Exit: custom_stoploss trailing (offset 5%, trail 2%) + fixed SL -20%
-    Supplementary exits: fastk_profit_sell, cci_recovery_sell
+Combines NinjaFutures5m V14.0 (long side) and NinjaForgeShort v16.0 (short side)
+into one strategy with fully separated per-side entry, exit, and stoploss behavior.
 
-  SHORT side → NinjaForgeShort logic (auto-bot)
-    2 rejection signals (bear_bounce_short, correction_fade_short) gated by 1h regime
-    Exit: R-multiple priority stack + winner deferral
-    Fixed SL -35%, no trailing
+Protection architecture note:
+- Built-in StoplossGuard is intentionally NOT used because built-in protections do not
+  distinguish long vs short.
+- StoplossGuard is implemented manually per side in confirm_trade_entry().
+- Only CooldownPeriod remains as a built-in shared protection.
 
-Each side's entry/exit/stoploss logic runs INDEPENDENTLY — no cross-contamination.
-Leverage: 15x for both sides.  Max 1 concurrent position.
+Long side (NinjaFutures5m V14.0):
+- Entry signals: e0v1e_1, e0v1e_new, clucHA, cofi.
+- Exit model: custom_stoploss with long-only trailing + supplemental custom exits.
+- Base stoploss: -20% (via custom_stoploss).
+
+Short side (NinjaForgeShort v16.0):
+- Entry signals: bear_bounce_short, correction_fade_short.
+- Exit model: R-multiple priority stack with winner-exit deferral wrapper.
+- Base stoploss: -35% (fixed, no trailing).
 
 Technical merge decisions:
-  - stoploss = -0.35 (widest base), custom_stoploss narrows for longs to -0.20 + trailing
-  - trailing_stop = False globally; trailing implemented in custom_stoploss for longs only
-  - minimal_roi = {"360": 0.04} from long (safety exit; shorts exit via custom_exit first)
-  - Protections: Short's 3-tier StoplossGuard + CooldownPeriod (per user choice)
-  - Indicators: both 5m stacks computed in parallel, shared 1h informative with regime detection
+- Global stoploss = -0.35 to preserve short-side risk model; long side narrows to -0.20
+  and applies trailing in custom_stoploss.
+- Global trailing_stop = False; trailing is implemented manually for longs only.
+- minimal_roi = {"360": 0.04} retained as long-side safety fallback while custom exits
+  handle primary exit flow.
+- Protections are split by side in confirm_trade_entry(); built-in protections keep only
+  CooldownPeriod.
+
+Execution profile:
+- Timeframes: 5m main + 1h informative regime context.
+- Leverage: 15x for both long and short.
+- Exposure: max 1 concurrent position.
+
+Latest backtest results (start $1,000, 75% wallet, compound, protections enabled,
+cache none):
+- P1 (2020.07-2022.05): 3,757,869% | 617 trades | WR 68.2% | DD 71.73%
+- P2 (2022.05-2024.03): 17,937% | 173 trades | WR 60.7% | DD 64.67%
+- P3 (2024.03-2025.12): 149,417% | 175 trades | WR 72.0% | DD 28.85%
+- OOS (2026.01-2026.03): 109.75% | 14 trades | WR 78.6% | DD 26.21%
 """
 
 from datetime import timedelta, datetime
@@ -186,33 +204,40 @@ class NinjaCombined(IStrategy):
     sell_cci_profit = -0.05
 
     # ═════════════════════════════════════════════════════════════════════════
-    # PROTECTIONS — Short's 3-tier StoplossGuard (per user choice)
+    # PER-SIDE PROTECTION PARAMETERS
+    # ═════════════════════════════════════════════════════════════════════════
+    #
+    # Built-in protections can't distinguish long vs short.
+    # StoplossGuard is implemented per-side in confirm_trade_entry instead.
+    # Only CooldownPeriod remains built-in (shared, same value for both).
+    #
+    # Long protections (from NinjaFutures5m V14.0):
+    #   StoplossGuard: 1 long SL in 4h → block long 6h (all pairs)
+    LONG_SL_GUARD_LOOKBACK_H = 4
+    LONG_SL_GUARD_TRADE_LIMIT = 1
+    LONG_SL_GUARD_PAUSE_H = 6
+
+    # Short protections (from NinjaForgeShort v16.0):
+    #   Tier 1: 2 short SLs on same pair in 2h → block that pair 2h
+    SHORT_SL_GUARD_PAIR_LOOKBACK_H = 2
+    SHORT_SL_GUARD_PAIR_TRADE_LIMIT = 2
+    SHORT_SL_GUARD_PAIR_PAUSE_H = 2
+    #   Tier 2: 2 short SLs in 10h → block all shorts 12h
+    SHORT_SL_GUARD_CASCADE_LOOKBACK_H = 10
+    SHORT_SL_GUARD_CASCADE_TRADE_LIMIT = 2
+    SHORT_SL_GUARD_CASCADE_PAUSE_H = 12
+    #   Tier 3: 3 short SLs in 24h → block all shorts 18h
+    SHORT_SL_GUARD_PORTFOLIO_LOOKBACK_H = 24
+    SHORT_SL_GUARD_PORTFOLIO_TRADE_LIMIT = 3
+    SHORT_SL_GUARD_PORTFOLIO_PAUSE_H = 18
+
+    # ═════════════════════════════════════════════════════════════════════════
+    # PROTECTIONS — CooldownPeriod only (StoplossGuard moved to per-side)
     # ═════════════════════════════════════════════════════════════════════════
     @property
     def protections(self):
         return [
             {"method": "CooldownPeriod", "stop_duration_candles": 3},
-            {
-                "method": "StoplossGuard",
-                "lookback_period_candles": 24,
-                "trade_limit": 2,
-                "stop_duration_candles": 24,
-                "only_per_pair": True,
-            },
-            {
-                "method": "StoplossGuard",
-                "lookback_period_candles": 120,
-                "trade_limit": 2,
-                "stop_duration_candles": 144,
-                "only_per_pair": False,
-            },
-            {
-                "method": "StoplossGuard",
-                "lookback_period_candles": 288,
-                "trade_limit": 3,
-                "stop_duration_candles": 216,
-                "only_per_pair": False,
-            },
         ]
 
     def informative_pairs(self):
@@ -222,6 +247,7 @@ class NinjaCombined(IStrategy):
     # INDICATORS — both 5m stacks + shared 1h informative
     # ═════════════════════════════════════════════════════════════════════════
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        """Compute merged indicator stacks: long-side 5m, short-side 5m, and shared 1h regime context."""
         # ── 5m indicators shared by both sides ──
         dataframe["ema_8"] = ta.EMA(dataframe, timeperiod=8)
         stoch_fast = ta.STOCHF(
@@ -537,6 +563,7 @@ class NinjaCombined(IStrategy):
     # ENTRY — both long and short signals
     # ═════════════════════════════════════════════════════════════════════════
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        """Build entry flags for 4 long dip signals and 2 short rejection/fade signals with regime gates."""
         dataframe["enter_long"] = 0
         dataframe["enter_short"] = 0
         dataframe["enter_tag"] = ""
@@ -721,6 +748,7 @@ class NinjaCombined(IStrategy):
         side,
         **kwargs,
     ):
+        """Use fixed 15x on both sides to keep merged risk and sizing behavior consistent."""
         return 15.0
 
     # ═════════════════════════════════════════════════════════════════════════
@@ -806,7 +834,57 @@ class NinjaCombined(IStrategy):
         )
 
     # ═════════════════════════════════════════════════════════════════════════
-    # CONFIRM TRADE ENTRY — short's post-SL bearish reset gate
+    # PER-SIDE STOPLOSS GUARD — replaces built-in StoplossGuard
+    # ═════════════════════════════════════════════════════════════════════════
+    def _is_sl_guard_active(
+        self,
+        current_time,
+        side: str,
+        lookback_hours: float,
+        trade_limit: int,
+        pause_hours: float,
+        per_pair: bool = False,
+        pair: str = None,
+    ) -> bool:
+        """Per-side StoplossGuard evaluator.
+        Returns True when same-side stoploss clusters trigger an active pause window.
+        """
+        search_start = current_time - timedelta(hours=lookback_hours + pause_hours)
+        all_recent = Trade.get_trades_proxy(is_open=False, close_date=search_start)
+
+        # Filter by side + stoploss exit reason
+        sl_trades = [
+            t
+            for t in all_recent
+            if (t.is_short == (side == "short"))
+            and t.exit_reason in ("stop_loss", "stoploss_on_exchange")
+        ]
+
+        if per_pair and pair:
+            sl_trades = [t for t in sl_trades if t.pair == pair]
+
+        if len(sl_trades) < trade_limit:
+            return False
+
+        # Sort chronologically and check sliding windows
+        sl_trades.sort(key=lambda t: t.close_date_utc)
+
+        for i in range(len(sl_trades) - trade_limit + 1):
+            group = sl_trades[i : i + trade_limit]
+            window_span_h = (
+                group[-1].close_date_utc - group[0].close_date_utc
+            ).total_seconds() / 3600
+
+            if window_span_h <= lookback_hours:
+                # Guard triggered at last SL in this group
+                pause_until = group[-1].close_date_utc + timedelta(hours=pause_hours)
+                if current_time < pause_until:
+                    return True
+
+        return False
+
+    # ═════════════════════════════════════════════════════════════════════════
+    # CONFIRM TRADE ENTRY — per-side protections + short's post-SL gate
     # ═════════════════════════════════════════════════════════════════════════
     def confirm_trade_entry(
         self,
@@ -820,10 +898,55 @@ class NinjaCombined(IStrategy):
         side,
         **kwargs,
     ) -> bool:
-        if side != "short":
+        """Apply manual per-side StoplossGuard logic before entry, plus short post-SL bear-regime gating."""
+        # ── LONG PROTECTIONS (from NinjaFutures5m V14.0) ──
+        if side == "long":
+            # StoplossGuard: 1 long SL in 4h → block long 6h (all pairs)
+            if self._is_sl_guard_active(
+                current_time,
+                "long",
+                lookback_hours=self.LONG_SL_GUARD_LOOKBACK_H,
+                trade_limit=self.LONG_SL_GUARD_TRADE_LIMIT,
+                pause_hours=self.LONG_SL_GUARD_PAUSE_H,
+            ):
+                return False
             return True
 
-        # Post-SL gate: after recent large SL loss, require full bear regime to re-enter
+        # ── SHORT PROTECTIONS (from NinjaForgeShort v16.0) ──
+
+        # Tier 1: Per-pair StoplossGuard — 2 SLs in 2h → block pair 2h
+        if self._is_sl_guard_active(
+            current_time,
+            "short",
+            lookback_hours=self.SHORT_SL_GUARD_PAIR_LOOKBACK_H,
+            trade_limit=self.SHORT_SL_GUARD_PAIR_TRADE_LIMIT,
+            pause_hours=self.SHORT_SL_GUARD_PAIR_PAUSE_H,
+            per_pair=True,
+            pair=pair,
+        ):
+            return False
+
+        # Tier 2: Cascade StoplossGuard — 2 SLs in 10h → block all shorts 12h
+        if self._is_sl_guard_active(
+            current_time,
+            "short",
+            lookback_hours=self.SHORT_SL_GUARD_CASCADE_LOOKBACK_H,
+            trade_limit=self.SHORT_SL_GUARD_CASCADE_TRADE_LIMIT,
+            pause_hours=self.SHORT_SL_GUARD_CASCADE_PAUSE_H,
+        ):
+            return False
+
+        # Tier 3: Portfolio StoplossGuard — 3 SLs in 24h → block all shorts 18h
+        if self._is_sl_guard_active(
+            current_time,
+            "short",
+            lookback_hours=self.SHORT_SL_GUARD_PORTFOLIO_LOOKBACK_H,
+            trade_limit=self.SHORT_SL_GUARD_PORTFOLIO_TRADE_LIMIT,
+            pause_hours=self.SHORT_SL_GUARD_PORTFOLIO_PAUSE_H,
+        ):
+            return False
+
+        # Post-SL gate: after recent large SL loss, require full bear regime
         sl_lookback = current_time - timedelta(hours=self.POST_SL_GATE_HOURS)
         all_recent = Trade.get_trades_proxy(is_open=False, close_date=sl_lookback)
         has_recent_sl = any(
@@ -847,6 +970,7 @@ class NinjaCombined(IStrategy):
     def custom_exit(
         self, pair, trade, current_time, current_rate, current_profit, **kwargs
     ):
+        """Route exit evaluation to long or short custom exit logic by trade direction."""
         if trade.is_short:
             return self._short_custom_exit(
                 pair, trade, current_time, current_rate, current_profit, **kwargs
@@ -862,6 +986,7 @@ class NinjaCombined(IStrategy):
     def _long_custom_exit(
         self, pair, trade, current_time, current_rate, current_profit, **kwargs
     ):
+        """Long exits: take overbought profit via fastk or exit post-drawdown recovery via CCI."""
         dataframe, _ = self.dp.get_analyzed_dataframe(
             pair=pair, timeframe=self.timeframe
         )
@@ -889,6 +1014,7 @@ class NinjaCombined(IStrategy):
     def _short_custom_exit(
         self, pair, trade, current_time, current_rate, current_profit, **kwargs
     ):
+        """Run short R-stack evaluation first, then optionally defer eligible winner exits."""
         exit_result = self._evaluate_short_exit(
             pair, trade, current_time, current_rate, current_profit, **kwargs
         )
@@ -947,6 +1073,7 @@ class NinjaCombined(IStrategy):
     def _evaluate_short_exit(
         self, pair, trade, current_time, current_rate, current_profit, **kwargs
     ):
+        """Evaluate short exits in priority order using regime invalidation, R-thresholds, and time-based failsafes."""
         dataframe, _ = self.dp.get_analyzed_dataframe(
             pair=pair, timeframe=self.timeframe
         )
